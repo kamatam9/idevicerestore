@@ -30,7 +30,9 @@
 #include <unistd.h>
 #include <errno.h>
 #include <limits.h>
-#ifndef WIN32
+#ifdef WIN32
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #endif
 #include <sys/stat.h>
@@ -1270,23 +1272,28 @@ int ipsw_extract_component(const char* ipsw, const char* path, unsigned char** c
 
 		size = fst.st_size;
 #ifdef WIN32
-		buffer = (unsigned char*)malloc(size);
-		if (buffer == NULL) {
-			error("ERROR: Out of memory\n");
-			flcose(f);
-			free(filepath);
-			ipsw_close(archive);
-			return -1;
-		}
+		HANDLE fm;
 
-		if (fread(buffer, 1, size, f) != size) {
-			error("ERROR: %s: fread failed for %s: %s\n", __func__, filepath, strerror(errno));
-			free(buffer);
+		fm = CreateFileMapping((HANDLE)_get_osfhandle(fileno(f)), NULL, PAGE_WRITECOPY, 0, size, NULL);
+		if (fm == NULL) {
+			error("ERROR: Failed to create a file mapping for %s\n", filepath);
 			fclose(f);
 			free(filepath);
 			ipsw_close(archive);
 			return -1;
 		}
+
+		buffer = MapViewOfFile(fm, FILE_MAP_WRITE|FILE_MAP_COPY, 0, 0, size);
+		if (buffer == NULL) {
+			error("ERROR: Failed to map a view of a file mapping for %s\n", filepath);
+			CloseHandle(fm);
+			fclose(f);
+			free(filepath);
+			ipsw_close(archive);
+			return -1;
+		}
+
+		CloseHandle(fm);
 #else
 		buffer = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fileno(f), 0);
 		if (buffer == NULL) {
@@ -1312,9 +1319,6 @@ int ipsw_extract_component(const char* ipsw, const char* path, unsigned char** c
 
 int ipsw_free_component(const char* ipsw, char *component_data, unsigned int component_size)
 {
-#ifdef WIN32
-	free(component_data);
-#else
 	ipsw_archive *archive = NULL;
 
 	archive = ipsw_open(ipsw);
@@ -1326,11 +1330,14 @@ int ipsw_free_component(const char* ipsw, char *component_data, unsigned int com
 	if (archive->zip) {
 		free(component_data);
 	} else {
+#ifdef WIN32
+		UnmapViewOfFile(component_data);
+#else
 		munmap(component_data, component_size);
+#endif
 	}
 
 	ipsw_close(archive);
-#endif
 
 	return 0;
 }
